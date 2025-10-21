@@ -1,32 +1,59 @@
+name: CD - Deploy to EC2
+
+on:
+  push:
+    branches: [ "main" ]   # roda a cada push na main
+  workflow_dispatch: {}     # permite rodar manualmente pelo botão "Run workflow"
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
+    # Modo de simulação (troque para 'false' quando for deploy real)
     env:
-      SIMULATE_DEPLOY: true   # <--- muda pra false quando quiser deploy real
+      SIMULATE_DEPLOY: true
+
+    defaults:
+      run:
+        working-directory: com.login.william   # seu pom.xml está aqui
+
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup JDK 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: "17"
+          cache: maven
 
-      - name: Build app
-        working-directory: com.login.william
-        run: mvn -B clean package -DskipTests
+      - name: Build (skip tests — CI já valida)
+        run: mvn -B -DskipTests clean package
 
+      - name: Rename JAR
+        run: |
+          JAR=$(ls target/*.jar | head -n1)
+          cp "$JAR" target/simple-auth.jar
+          ls -lh target/
+
+      # --------- SIMULAÇÃO (sem AWS) ----------
       - name: Simular cópia para EC2
         if: env.SIMULATE_DEPLOY == 'true'
         run: |
-          echo "📦 Simulação de deploy iniciada..."
-          echo "Gerando arquivo: /tmp/simple-auth.jar"
-          cp com.login.william/target/simple-auth.jar /tmp/simple-auth.jar
-          ls -lh /tmp/simple-auth.jar
-          echo "✅ Simulação concluída (nenhuma conexão com EC2 foi feita)."
+          echo "📦 Simulando deploy (sem AWS)..."
+          cp target/simple-auth.jar $GITHUB_WORKSPACE/simple-auth.jar
+          ls -lh $GITHUB_WORKSPACE/simple-auth.jar
+          echo "✅ Simulação concluída."
 
-      - name: Copiar JAR real para EC2
+      # --------- DEPLOY REAL (com AWS) ----------
+      - name: Add known_hosts
+        if: env.SIMULATE_DEPLOY != 'true'
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "${{ secrets.EC2_PORT || 22 }}" "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Copy JAR to EC2
         if: env.SIMULATE_DEPLOY != 'true'
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -36,8 +63,9 @@ jobs:
           port: ${{ secrets.EC2_PORT || 22 }}
           source: "com.login.william/target/simple-auth.jar"
           target: "/tmp/simple-auth.jar"
+          overwrite: true
 
-      - name: Executar deploy remoto (real)
+      - name: Remote deploy script
         if: env.SIMULATE_DEPLOY != 'true'
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -47,6 +75,5 @@ jobs:
           port: ${{ secrets.EC2_PORT || 22 }}
           script: |
             set -e
-            RELEASE="release_$(date +'%Y%m%d-%H%M%S')"
-            echo "🚀 Deploy real executado com release: $RELEASE"
+            RELEASE="$(date +'%Y-%m-%d_%H-%M-%S')__${GITHUB_SHA::7}"
             sudo /opt/simple-auth/deploy.sh "$RELEASE"
