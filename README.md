@@ -1,2 +1,0 @@
-# logintest
-projeto com gitaction
