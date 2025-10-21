@@ -1,60 +1,82 @@
-name: CI - Maven (build, test, package)
+name: CD - Deploy to EC2
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+  # dispara automaticamente quando o CI terminar
+  workflow_run:
+    workflows: ["CI - Maven (build, test, package)"]  # nome EXATO do seu CI
+    types: [completed]
+  # permite rodar manualmente pelo botão "Run workflow"
   workflow_dispatch: {}
 
 jobs:
-  build-test-package:
+  deploy:
+    # só continua se o CI tiver dado sucesso na branch main
+    if: >
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+
     runs-on: ubuntu-latest
-    # seu pom.xml fica no subdiretório:
-    defaults:
-      run:
-        working-directory: com.login.william
+
+    # Modo simulado por padrão (troque para 'false' para deploy real)
+    env:
+      SIMULATE_DEPLOY: true
 
     steps:
-      # 0) Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 1) Restore/Cache Maven + JDK
-      - name: Set up JDK 17 (with Maven cache)
-        uses: actions/setup-java@v4
+      # Baixa o artefato "simple-auth-jar" do CI
+      - name: Download artifact from CI run
+        uses: dawidd6/action-download-artifact@v3
         with:
-          distribution: temurin
-          java-version: "17"
-          cache: maven
+          workflow: ci.yml                 # arquivo do seu CI
+          workflow_conclusion: success
+          name: simple-auth-jar            # mesmo nome que você publica no CI
+          path: .                          # baixa na raiz do workspace
 
-      # 2) Validar (baixa dependências e verifica POM) — “restore”
-      - name: Maven validate (restore deps)
-        run: mvn -B -q -DskipTests validate
+      - name: List artifact
+        run: ls -lh
 
-      # 3) Build (compila)
-      - name: Build
-        run: mvn -B -DskipTests compile
+      # --------- SIMULAÇÃO (sem AWS) ----------
+      - name: Simulate deploy (no AWS)
+        if: env.SIMULATE_DEPLOY == 'true'
+        run: |
+          echo "📦 Simulando deploy..."
+          test -f ./*.jar || (echo "JAR não encontrado" && exit 1)
+          cp ./*.jar /tmp/simple-auth.jar
+          ls -lh /tmp/simple-auth.jar
+          echo "✅ Simulação concluída."
 
-      # 4) Testes unitários
-      - name: Unit tests
-        run: mvn -B test
+      # --------- DEPLOY REAL (com AWS) ----------
+      - name: Add known_hosts
+        if: env.SIMULATE_DEPLOY != 'true'
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "${{ secrets.EC2_PORT || 22 }}" "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
 
-      # 5) Package (gera JAR)
-      - name: Package
-        run: mvn -B -DskipTests package
-
-      # 6) Publicar relatório de testes
-      - name: Upload Surefire reports
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Copy JAR to EC2 (/tmp)
+        if: env.SIMULATE_DEPLOY != 'true'
+        uses: appleboy/scp-action@v0.1.7
         with:
-          name: surefire-reports
-          path: com.login.william/target/surefire-reports/
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT || 22 }}
+          source: "*.jar"                    # baixado na etapa anterior
+          target: "/tmp/simple-auth.jar"
+          overwrite: true
 
-      # 7) Publicar o JAR como artefato (nome fixo para facilitar o CD)
-      - name: Upload App JAR
-        uses: actions/upload-artifact@v4
+      - name: Run remote deploy script
+        if: env.SIMULATE_DEPLOY != 'true'
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          name: simple-auth-jar
-          path: com.login.william/target/*.jar
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT || 22 }}
+          script: |
+            set -e
+            RELEASE="$(date +'%Y-%m-%d_%H-%M-%S')__${GITHUB_SHA::7}"
+            sudo /opt/simple-auth/deploy.sh "$RELEASE"
+            echo "✅ Deploy real concluído: $RELEASE"
