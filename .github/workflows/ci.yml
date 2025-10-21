@@ -1,46 +1,60 @@
-name: CI - Maven
+name: CI - Maven (build, test, package)
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch: {}
 
 jobs:
-  build-test:
+  build-test-package:
     runs-on: ubuntu-latest
-
-    # 👇 Faz todos os `run:` executarem em com.login.william
+    # seu pom.xml fica no subdiretório:
     defaults:
       run:
         working-directory: com.login.william
 
     steps:
+      # 0) Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      # 1) Restore/Cache Maven + JDK
+      - name: Set up JDK 17 (with Maven cache)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
           cache: maven
 
-      - name: Sanity check (onde está o pom?)
-        run: |
-          pwd
-          ls -la
-          test -f pom.xml && echo "Achei o pom.xml" || (echo "Sem pom.xml aqui" && exit 1)
+      # 2) Validar (baixa dependências e verifica POM) — “restore”
+      - name: Maven validate (restore deps)
+        run: mvn -B -q -DskipTests validate
 
-      - name: Build & Test
-        run: mvn -B -DskipTests=false clean verify
+      # 3) Build (compila)
+      - name: Build
+        run: mvn -B -DskipTests compile
 
-      - name: Package (artefato)
-        if: success()
+      # 4) Testes unitários
+      - name: Unit tests
+        run: mvn -B test
+
+      # 5) Package (gera JAR)
+      - name: Package
         run: mvn -B -DskipTests package
 
-      - name: Upload JAR
+      # 6) Publicar relatório de testes
+      - name: Upload Surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: com.login.william/target/surefire-reports/
+
+      # 7) Publicar o JAR como artefato (nome fixo para facilitar o CD)
+      - name: Upload App JAR
         uses: actions/upload-artifact@v4
         with:
           name: simple-auth-jar
-          path: com.login.william/target/*.jar  # <- caminho relativo à raiz do repo
+          path: com.login.william/target/*.jar

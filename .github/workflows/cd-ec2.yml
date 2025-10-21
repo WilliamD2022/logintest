@@ -1,79 +1,60 @@
-name: CD - Deploy to EC2
+name: CI - Maven (build, test, package)
 
 on:
   push:
-    branches: [ "main" ]   # roda a cada push na main
-  workflow_dispatch: {}     # permite rodar manualmente pelo botão "Run workflow"
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch: {}
 
 jobs:
-  deploy:
+  build-test-package:
     runs-on: ubuntu-latest
-
-    # Modo de simulação (troque para 'false' quando for deploy real)
-    env:
-      SIMULATE_DEPLOY: true
-
+    # seu pom.xml fica no subdiretório:
     defaults:
       run:
-        working-directory: com.login.william   # seu pom.xml está aqui
+        working-directory: com.login.william
 
     steps:
+      # 0) Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      # 1) Restore/Cache Maven + JDK
+      - name: Set up JDK 17 (with Maven cache)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
           cache: maven
 
-      - name: Build (skip tests — CI já valida)
-        run: mvn -B -DskipTests clean package
+      # 2) Validar (baixa dependências e verifica POM) — “restore”
+      - name: Maven validate (restore deps)
+        run: mvn -B -q -DskipTests validate
 
-      - name: Rename JAR
-        run: |
-          JAR=$(ls target/*.jar | head -n1)
-          cp "$JAR" target/simple-auth.jar
-          ls -lh target/
+      # 3) Build (compila)
+      - name: Build
+        run: mvn -B -DskipTests compile
 
-      # --------- SIMULAÇÃO (sem AWS) ----------
-      - name: Simular cópia para EC2
-        if: env.SIMULATE_DEPLOY == 'true'
-        run: |
-          echo "📦 Simulando deploy (sem AWS)..."
-          cp target/simple-auth.jar $GITHUB_WORKSPACE/simple-auth.jar
-          ls -lh $GITHUB_WORKSPACE/simple-auth.jar
-          echo "✅ Simulação concluída."
+      # 4) Testes unitários
+      - name: Unit tests
+        run: mvn -B test
 
-      # --------- DEPLOY REAL (com AWS) ----------
-      - name: Add known_hosts
-        if: env.SIMULATE_DEPLOY != 'true'
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -p "${{ secrets.EC2_PORT || 22 }}" "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+      # 5) Package (gera JAR)
+      - name: Package
+        run: mvn -B -DskipTests package
 
-      - name: Copy JAR to EC2
-        if: env.SIMULATE_DEPLOY != 'true'
-        uses: appleboy/scp-action@v0.1.7
+      # 6) Publicar relatório de testes
+      - name: Upload Surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          port: ${{ secrets.EC2_PORT || 22 }}
-          source: "com.login.william/target/simple-auth.jar"
-          target: "/tmp/simple-auth.jar"
-          overwrite: true
+          name: surefire-reports
+          path: com.login.william/target/surefire-reports/
 
-      - name: Remote deploy script
-        if: env.SIMULATE_DEPLOY != 'true'
-        uses: appleboy/ssh-action@v1.0.3
+      # 7) Publicar o JAR como artefato (nome fixo para facilitar o CD)
+      - name: Upload App JAR
+        uses: actions/upload-artifact@v4
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          port: ${{ secrets.EC2_PORT || 22 }}
-          script: |
-            set -e
-            RELEASE="$(date +'%Y-%m-%d_%H-%M-%S')__${GITHUB_SHA::7}"
-            sudo /opt/simple-auth/deploy.sh "$RELEASE"
+          name: simple-auth-jar
+          path: com.login.william/target/*.jar
