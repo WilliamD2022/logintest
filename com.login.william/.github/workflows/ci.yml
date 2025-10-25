@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   api-tests:
+    name: api-tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,21 +27,21 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: 'maven'
+          cache: maven
 
-      - name: Run API tests
-        run: |
-          mvn -q -B -f qa-automation/pom.xml -pl modules/api-tests -am clean test -Denv=ci -Dthreads=4
+      - name: Run tests
+        run: mvn -q -B clean test -Denv=ci
 
-      - name: Upload Allure results (API)
+      - name: Upload Allure results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: allure-results-api
-          path: qa-automation/modules/api-tests/target/allure-results
+          name: allure-results
+          path: target/allure-results
           if-no-files-found: warn
 
   allure-report:
+    name: allure-report
     runs-on: ubuntu-latest
     needs: api-tests
     steps:
@@ -49,13 +50,12 @@ jobs:
       - name: Download Allure results
         uses: actions/download-artifact@v4
         with:
-          name: allure-results-api     # só API
+          name: allure-results
           path: merged-results
 
       - name: Verify results
         run: |
-          echo "Files count:"
-          find merged-results -type f | wc -l
+          echo "Files count:" && find merged-results -type f | wc -l
           test -n "$(ls -A merged-results || true)" || (echo "No results to publish" && exit 1)
 
       - name: Download Allure CLI
@@ -68,7 +68,7 @@ jobs:
           ./allure-2.27.0/bin/allure generate merged-results --clean -o allure-report
           test -f allure-report/index.html && echo "Allure report generated."
 
-      - name: Upload Allure HTML as artifact
+      - name: Upload Allure HTML (artifact)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -84,6 +84,7 @@ jobs:
           path: allure-report
 
   deploy-pages:
+    name: deploy-pages
     runs-on: ubuntu-latest
     needs: allure-report
     environment:
