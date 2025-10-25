@@ -18,24 +18,16 @@ jobs:
       run:
         working-directory: com.login.william
     steps:
-      - name: Checkout código
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: maven
 
-      - name: Rodar UNIT tests (@Tag unit)
-        run: mvn -B -q clean test -Djunit.jupiter.tags=unit
-
-      - name: Verificar target/allure-results (unit)
-        if: always()
-        run: |
-          echo "target/allure-results (unit):"
-          ls -la target/allure-results || true
+      - name: Run UNIT tests (@Tag unit)
+        run: mvn -q -B clean test -Djunit.jupiter.tags=unit
 
       - name: Upload Allure results (UNIT)
         if: always()
@@ -47,29 +39,21 @@ jobs:
 
   api-tests:
     runs-on: ubuntu-latest
-    needs: unit-tests
+    needs: unit-tests   # <<<<<< faz o unit rodar ANTES
     defaults:
       run:
         working-directory: com.login.william
     steps:
-      - name: Checkout código
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: maven
 
-      - name: Rodar API tests (@Tag api)
-        run: mvn -B -q clean test -Djunit.jupiter.tags=api
-
-      - name: Verificar target/allure-results (api)
-        if: always()
-        run: |
-          echo "target/allure-results (api):"
-          ls -la target/allure-results || true
+      - name: Run API tests (@Tag api)
+        run: mvn -q -B clean test -Djunit.jupiter.tags=api
 
       - name: Upload Allure results (API)
         if: always()
@@ -83,40 +67,36 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-tests, api-tests]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Baixar Allure results (UNIT)
+      - name: Download Allure results (UNIT)
         uses: actions/download-artifact@v4
         with:
           name: allure-results-unit
           path: results/unit
 
-      - name: Baixar Allure results (API)
+      - name: Download Allure results (API)
         uses: actions/download-artifact@v4
         with:
           name: allure-results-api
           path: results/api
 
-      - name: Agregar resultados
+      - name: Merge results
         run: |
           mkdir -p results/merged
           cp -R results/unit/* results/merged/ 2>/dev/null || true
           cp -R results/api/*  results/merged/ 2>/dev/null || true
-          echo "Arquivos agregados:"
-          find results/merged -type f -maxdepth 2 -print || true
-          if [ -z "$(ls -A results/merged || true)" ]; then
-            echo "Sem resultados para gerar Allure"; exit 1; fi
+          echo "Merged files:"
+          find results/merged -type f | sed 's/^/ - /'
+          test -n "$(ls -A results/merged)" || (echo "No Allure results" && exit 1)
 
-      - name: Baixar Allure CLI
+      - name: Download Allure CLI
         run: |
           curl -sLo allure.tgz https://repo1.maven.org/maven2/io/qameta/allure/allure-commandline/2.27.0/allure-commandline-2.27.0.tgz
           tar -xzf allure.tgz
 
-      - name: Gerar Allure Report (UNIT+API)
-        run: |
-          ./allure-2.27.0/bin/allure generate results/merged -o allure-report --clean
-          test -f allure-report/index.html && echo "Report gerado com sucesso."
+      - name: Generate Allure Report
+        run: ./allure-2.27.0/bin/allure generate results/merged -o allure-report --clean
 
       - name: Upload Allure Report
         uses: actions/upload-artifact@v4
@@ -124,7 +104,6 @@ jobs:
           name: allure-report
           path: allure-report
 
-  # se você já tem deploy-pages configurado e funcionando, mantenha:
   deploy-pages:
     runs-on: ubuntu-latest
     needs: allure-report
@@ -144,5 +123,4 @@ jobs:
           path: ./allure-report
 
       - name: Deploy to GitHub Pages
-        id: deployment
         uses: actions/deploy-pages@v4
