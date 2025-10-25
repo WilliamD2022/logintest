@@ -3,14 +3,13 @@ name: CD - Deploy to EC2
 on:
   # dispara automaticamente quando o CI terminar
   workflow_run:
-    workflows: ["CI - Maven (build, test, package)"]  # nome EXATO do seu CI
+    workflows: ["CI - Maven (build, test, package)"]
     types: [completed]
   # permite rodar manualmente pelo botão "Run workflow"
   workflow_dispatch: {}
 
 jobs:
   deploy:
-    # só continua se o CI tiver dado sucesso na branch main
     if: >
       (github.event_name == 'workflow_dispatch') ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -18,44 +17,54 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    # Modo simulado por padrão (troque para 'false' para deploy real)
     env:
+      # 🔍 mostra todos os comandos no log do GitHub Actions
+      ACTIONS_STEP_DEBUG: true
+      # 🔁 simulação ativada por padrão (mude para 'false' p/ deploy real)
       SIMULATE_DEPLOY: true
 
     steps:
-      - name: Checkout
+      - name: Checkout código
         uses: actions/checkout@v4
 
-      # Baixa o artefato "simple-auth-jar" do CI
-      - name: Download artifact from CI run
+      - name: 📥 Baixar artefato do CI (simple-auth-jar)
         uses: dawidd6/action-download-artifact@v3
         with:
-          workflow: ci.yml                 # arquivo do seu CI
+          workflow: ci.yml
           workflow_conclusion: success
-          name: simple-auth-jar            # mesmo nome que você publica no CI
-          path: .                          # baixa na raiz do workspace
+          name: simple-auth-jar
+          path: .
+      - name: 🔎 Listar artefatos baixados
+        run: |
+          echo "Listando artefatos disponíveis:"
+          ls -lh
 
-      - name: List artifact
-        run: ls -lh
-
-      # --------- SIMULAÇÃO (sem AWS) ----------
-      - name: Simulate deploy (no AWS)
+      # ----------------------------------------------------------------
+      # SIMULAÇÃO (sem AWS)
+      # ----------------------------------------------------------------
+      - name: 🤖 Simular deploy local (sem AWS)
         if: env.SIMULATE_DEPLOY == 'true'
         run: |
-          echo "📦 Simulando deploy..."
-          test -f ./*.jar || (echo "JAR não encontrado" && exit 1)
+          echo "🚀 Iniciando simulação de deploy..."
+          echo "Verificando se o JAR existe..."
+          test -f ./*.jar || (echo "❌ JAR não encontrado!" && exit 1)
+          echo "Copiando JAR para /tmp/simple-auth.jar"
           cp ./*.jar /tmp/simple-auth.jar
+          echo "📦 Arquivo copiado:"
           ls -lh /tmp/simple-auth.jar
-          echo "✅ Simulação concluída."
+          echo "✅ Simulação concluída com sucesso!"
 
-      # --------- DEPLOY REAL (com AWS) ----------
-      - name: Add known_hosts
+      # ----------------------------------------------------------------
+      # DEPLOY REAL (com AWS)
+      # ----------------------------------------------------------------
+      - name: 🧠 Adicionar host remoto aos conhecidos
         if: env.SIMULATE_DEPLOY != 'true'
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan -p "${{ secrets.EC2_PORT || 22 }}" "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+          echo "✅ Host remoto adicionado ao known_hosts"
 
-      - name: Copy JAR to EC2 (/tmp)
+      - name: 📤 Copiar JAR para EC2 (/tmp)
         if: env.SIMULATE_DEPLOY != 'true'
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -63,11 +72,11 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: ${{ secrets.EC2_PORT || 22 }}
-          source: "*.jar"                    # baixado na etapa anterior
+          source: "*.jar"
           target: "/tmp/simple-auth.jar"
           overwrite: true
 
-      - name: Run remote deploy script
+      - name: 🧩 Executar script remoto de deploy
         if: env.SIMULATE_DEPLOY != 'true'
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -78,5 +87,6 @@ jobs:
           script: |
             set -e
             RELEASE="$(date +'%Y-%m-%d_%H-%M-%S')__${GITHUB_SHA::7}"
+            echo "🚀 Iniciando deploy da release $RELEASE..."
             sudo /opt/simple-auth/deploy.sh "$RELEASE"
-            echo "✅ Deploy real concluído: $RELEASE"
+            echo "✅ Deploy concluído com sucesso!"
