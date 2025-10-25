@@ -3,6 +3,7 @@ package com.login.william.service;
 import com.login.william.dto.UserRequest;
 import com.login.william.repository.UserRepository;
 import com.login.william.model.UserAccount;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -13,6 +14,7 @@ import static org.mockito.Mockito.*;
 
 public class UserServiceTest {
 
+    @Tag("api")
     @Test
     void deveCriarUsuarioComSenhaCriptografada() {
         var repo = mock(UserRepository.class);

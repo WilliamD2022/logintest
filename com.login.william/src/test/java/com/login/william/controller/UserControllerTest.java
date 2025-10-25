@@ -4,6 +4,7 @@ import com.login.william.config.SecurityConfig;
 import com.login.william.dto.UserRequest;
 import com.login.william.dto.UserResponse;
 import com.login.william.service.UserService;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -30,6 +31,7 @@ class UserControllerTest {
     @MockBean
     UserService service;
 
+    @Tag("api")
     @Test
     @WithMockUser(username = "cliente", roles = {"CLIENTE"})
     void deveCriarUsuario() throws Exception {
