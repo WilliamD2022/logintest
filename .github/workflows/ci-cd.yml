@@ -1,237 +1,96 @@
-# Nome do workflow que aparece no GitHub Actions
-name: CI/CD - Simple Auth API
+deploy-mock:
+  name: CD (mock) - simular deploy
+  runs-on: ubuntu-latest
+  needs: [deploy-pages]
+  # roda apenas em push no main e nunca em pull_request
+  if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+  env:
+    # permite trocar o modo via "Run workflow" (mock|real)
+    DEPLOY_MODE: ${{ github.event.inputs.deploy_mode || 'mock' }}
+    # flag de seguranca para impedir deploy real neste job
+    REAL_DEPLOY: "false"
 
-on:
-  # Dispara o pipeline em todo push
-  push:
-  # Dispara também em Pull Requests (CI apenas)
-  pull_request:
-  # Permite executar manualmente pelo botão "Run workflow"
-  workflow_dispatch:
-    inputs:
-      deploy_mode:                       # input opcional para alternar modo de deploy
-        description: "Deployment mode (mock|real)"
-        required: false
-        default: "mock"
+  steps:
+    # 1) Obter o codigo
+    - name: Checkout
+      uses: actions/checkout@v4
 
-# Define o diretório padrão onde os passos `run:` serão executados
-defaults:
-  run:
-    working-directory: com.login.william
+    # 2) Preparar Java 17
+    - name: Setup JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 17
+        cache: maven
 
-jobs:
-  # ======================
-  # 1) BUILD (compilar)
-  # ======================
-  build:
-    name: build
-    runs-on: ubuntu-latest               # SO do runner
-    steps:
-      - uses: actions/checkout@v4        # baixa o código do repositório
-      - uses: actions/setup-java@v4      # instala/configura o JDK
-        with:
-          distribution: temurin
-          java-version: 17
-          cache: maven                   # cache do repositório Maven local
-      - name: Build (skip tests)
-        run: mvn -q -B -U clean package -DskipTests   # compila e empacota sem rodar testes
-      - name: Publicar JAR
-        uses: actions/upload-artifact@v4 # publica o JAR como artefato do job
-        with:
-          name: app-jar
-          path: com.login.william/**/target/*.jar
-          if-no-files-found: warn
+    # 3) Construir JAR atualizado (sem testes)
+    - name: Garantir JAR (skip tests)
+      run: mvn -q -B -U -DskipTests -f ./pom.xml clean package
 
-  # ======================
-  # 2) TESTES UNITÁRIOS
-  # ======================
-  unit-tests:
-    name: unit-tests
-    runs-on: ubuntu-latest
-    needs: build                         # executa somente após o build
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-          cache: maven
-      - name: Testes unitários (@unit)
-        run: mvn -q -B test -Dgroups=unit -DskipITs=true
-      - uses: actions/upload-artifact@v4 # anexa resultados (Allure + Surefire)
-        if: always()
-        with:
-          name: allure-results-unit
-          path: |
-            com.login.william/**/target/allure-results/**
-            com.login.william/**/target/surefire-reports/**
-          if-no-files-found: warn
+    # 4) Localizar JAR gerado
+    - name: Localizar JAR
+      id: jar
+      run: |
+        JAR_PATH=$(ls target/*.jar | head -n1)
+        echo "jar_path=$JAR_PATH" >> $GITHUB_OUTPUT
+        echo "JAR: $JAR_PATH"
 
-  # ======================
-  # 3) TESTES DE API
-  # ======================
-  api-tests:
-    name: api-tests
-    runs-on: ubuntu-latest
-    needs: unit-tests                    # executa após unit-tests
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-          cache: maven
-      - name: Testes de API (@api)
-        run: mvn -q -B test -Dgroups=api
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: allure-results-api
-          path: |
-            com.login.william/**/target/allure-results/**
-            com.login.william/**/target/surefire-reports/**
-          if-no-files-found: warn
+    # 5) Ler versao do pom.xml
+    - name: Extrair versao (Maven)
+      id: ver
+      run: |
+        VERSION=$(mvn -q -f ./pom.xml -DforceStdout help:evaluate -Dexpression=project.version)
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Versao: $VERSION"
 
-  # ======================
-  # 4) RELATÓRIO ALLURE
-  # ======================
-  allure-report:
-    name: allure-report
-    runs-on: ubuntu-latest
-    needs: [unit-tests, api-tests]       # só roda se os dois anteriores terminarem
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4  # baixa todos os artifacts (unit/api)
-        with:
-          path: ./artifacts
-      - name: Unificar results
-        run: |
-          mkdir -p target/allure-results
-          find artifacts -type d -name "allure-results" -exec cp -r {}/* target/allure-results/ \; || true
-      - name: Gerar Allure
-        uses: simple-elf/allure-report-action@v1.7
-        with:
-          allure_results: target/allure-results
-          allure_report: target/allure-report
-      - uses: actions/upload-artifact@v4      # publica o relatório estático
-        with:
-          name: allure-report
-          path: target/allure-report
+    # 6) Gerar release-notes de auditoria
+    - name: release-notes.txt (mock)
+      run: |
+        mkdir -p target/mock
+        cat > target/mock/release-notes.txt <<EOF
+        Projeto: Simple Auth API
+        Versao:  ${{ steps.ver.outputs.version }}
+        Commit:  ${GITHUB_SHA}
+        Autor:   ${GITHUB_ACTOR}
+        Branch:  ${GITHUB_REF_NAME}
+        Data:    $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        Modo:    ${DEPLOY_MODE} (REAL_DEPLOY=${REAL_DEPLOY})
+        EOF
 
-  # ======================
-  # 5) PUBLICAR NO PAGES
-  # ======================
-  deploy-pages:
-    name: deploy-pages
-    runs-on: ubuntu-latest
-    needs: allure-report
-    permissions:
-      pages: write
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4 # baixa o relatório gerado
-        with:
-          name: allure-report
-          path: ./site
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./site                   # envia a pasta para o Pages
-      - uses: actions/deploy-pages@v4    # publica no GitHub Pages
+    # 7) Gerar log simulando os passos de deploy
+    - name: deployment.log (mock)
+      run: |
+        cat > target/mock/deployment.log <<'EOF'
+        [MOCK] Iniciando pipeline de deploy...
+        [MOCK] Validando artefatos (JAR/relatorios)...
+        [MOCK] Target hipotetico: EC2/ECS (simulado)
+        [MOCK] Simulando SCP para /opt/logintest/app.jar
+        [MOCK] Simulando systemctl restart logintest
+        [MOCK] Health-check ficticio: GET http://localhost:8080/actuator/health
+        [MOCK] Deployment concluido (simulado).
+        EOF
 
-  # =======================
-  # 6) CD MOCKADO (simulação)
-  # =======================
-  deploy-mock:
-    name: CD (mock) – simular deploy
-    runs-on: ubuntu-latest
-    needs: [deploy-pages]                # roda DEPOIS de publicar o Allure no Pages
-    # evita rodar em PR e garante que só executa no branch main
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    env:
-      # permite trocar o modo via "Run workflow" (padrão: mock)
-      DEPLOY_MODE: ${{ github.event.inputs.deploy_mode || 'mock' }}
-      # guarda-chuva para futuramente ativar "real"
-      REAL_DEPLOY: "false"
-      # módulo Maven onde está o pom.xml
-      APP_WORKDIR: com.login.william
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    # 8) Empacotar artefatos de deploy mock
+    - name: Empacotar mock-deploy.zip
+      run: |
+        cp "${{ steps.jar.outputs.jar_path }}" target/mock/app.jar
+        (cd target && zip -r mock-deploy.zip mock)
+        echo "Gerado: target/mock-deploy.zip"
 
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-          cache: maven
+    # 9) Publicar artefatos para download no Actions
+    - name: Publicar artefatos de CD (mock)
+      uses: actions/upload-artifact@v4
+      with:
+        name: mock-deploy
+        path: |
+          target/mock-deploy.zip
+          target/mock/release-notes.txt
+          target/mock/deployment.log
+        if-no-files-found: error
 
-      # garante um JAR fresco para anexar ao pacote de "deploy"
-      - name: Garantir JAR (skip tests)
-        run: mvn -q -B -U -DskipTests -f $APP_WORKDIR/pom.xml clean package
-
-      - name: Localizar JAR
-        id: jar
-        run: |
-          JAR_PATH=$(ls $APP_WORKDIR/target/*.jar | head -n1)
-          echo "jar_path=$JAR_PATH" >> $GITHUB_OUTPUT
-          echo "JAR: $JAR_PATH"
-
-      - name: Extrair versão (Maven)
-        id: ver
-        run: |
-          VERSION=$(mvn -q -f $APP_WORKDIR/pom.xml -DforceStdout help:evaluate -Dexpression=project.version)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Versão: $VERSION"
-
-      # gera notas de release com metadados úteis para auditoria
-      - name: release-notes.txt (mock)
-        run: |
-          mkdir -p target/mock
-          cat > target/mock/release-notes.txt <<EOF
-          Projeto: Simple Auth API
-          Versão:  ${{ steps.ver.outputs.version }}
-          Commit:  ${GITHUB_SHA}
-          Autor:   ${GITHUB_ACTOR}
-          Branch:  ${GITHUB_REF_NAME}
-          Data:    $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          Modo:    ${DEPLOY_MODE} (REAL_DEPLOY=${REAL_DEPLOY})
-          EOF
-
-      # log simulando o passo-a-passo de um deploy real
-      - name: deployment.log (mock)
-        run: |
-          cat > target/mock/deployment.log <<'EOF'
-          [MOCK] Iniciando pipeline de deploy...
-          [MOCK] Validando artefatos (JAR/relatórios)...
-          [MOCK] Target hipotético: EC2/ECS (simulado)
-          [MOCK] Simulando SCP para /opt/logintest/app.jar
-          [MOCK] Simulando systemctl restart logintest
-          [MOCK] Health-check fictício: GET http://localhost:8080/actuator/health
-          [MOCK] Deployment concluído (simulado).
-          EOF
-
-      # empacota tudo em um ZIP para auditoria/roll-forward
-      - name: Empacotar mock-deploy.zip
-        run: |
-          cp "${{ steps.jar.outputs.jar_path }}" target/mock/app.jar
-          (cd target && zip -r mock-deploy.zip mock)
-          echo "Gerado: target/mock-deploy.zip"
-
-      # publica os artefatos do CD mockado
-      - name: Publicar artefatos de CD (mock)
-        uses: actions/upload-artifact@v4
-        with:
-          name: mock-deploy
-          path: |
-            target/mock-deploy.zip
-            target/mock/release-notes.txt
-            target/mock/deployment.log
-          if-no-files-found: error
-
-      # guarda-corpo: impede alguém de ativar "real" por engano neste job
-      - name: Guard-rail (bloquear deploy real aqui)
-        if: env.REAL_DEPLOY == 'true'
-        run: |
-          echo "::error::REAL_DEPLOY=true, mas este job é MOCK. Abortando."
-          exit 1
+    # 10) Guarda-corpo: nunca permitir deploy real aqui
+    - name: Guard-rail (bloquear deploy real aqui)
+      if: env.REAL_DEPLOY == 'true'
+      run: |
+        echo "::error::REAL_DEPLOY=true, mas este job e MOCK. Abortando."
+        exit 1
